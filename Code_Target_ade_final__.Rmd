@@ -1,0 +1,1095 @@
+---
+title: "drug_target"
+author: "Bagdad Youcef"
+date: "05/05/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(reticulate)
+library(caret)
+#library(FactoMineR)
+library(igraph)
+```
+
+Je vais premierement trier le jeu de données selon les classes pour pouvoir utiliser qu'une partie du tableau
+
+pour le fichier effets secondaires il y a 27 socs
+pour le fichier Targets il y a 17 familles de targets 
+
+donc la variable 'nbr_famille' ci dessous prend :
+une valeure entre 1 et 17 si on utulise le fichier "drugs/targets" ou entre 1 et 27 si on utilise le fichier "drugs/effets_secondaires" 
+
+```{r}
+nbr_familles=5 
+
+drug_tar_table=read.delim('tableau_cr3.txt',sep='\t',dec=".",header = T)
+
+#pour le jeu de donnees drug-target
+
+#diff_fmls=table(drug_tar_table$TARGET_CLASS)
+#tab_1=drug_tar_table[which(drug_tar_table$TARGET_CLASS==names(diff_fmls[1])),]
+#for (i in (2:length(table(diff_fmls)))){
+#  tab_=drug_tar_table[which(drug_tar_table$TARGET_CLASS==names(diff_fmls[i])),]
+ # tar_nm_tab=rbind(tab_1,tab_)
+  #tab_1=tar_nm_tab
+#}
+
+#pour le jeu de donnees drug-ade
+
+diff_fmls=table(drug_tar_table$soc_abbrev)
+tab_1=drug_tar_table[which(drug_tar_table$soc_abbrev==names(diff_fmls[1])),]
+for (i in (2:length(table(diff_fmls)))){
+  tab_=drug_tar_table[which(drug_tar_table$soc_abbrev==names(diff_fmls[i])),]
+  tar_nm_tab=rbind(tab_1,tab_)
+  tab_1=tar_nm_tab
+}
+
+```
+
+création du nouveau tableau contenant le nombre de familles ou socs choisi:
+```{r}
+nbr_lignes2=sum(diff_fmls[1:nbr_familles])
+tab_donnees2=tar_nm_tab[1:nbr_lignes2,]
+tab_donnees2
+
+```
+
+dans le chunk suivant il faut remlacer les noms de vecteurs aprés "$" si on utiilise un autre fichier selon ce qu'on veut avoir comme graphe 
+ici par exemple on a pris les noms des colonnes du fichier "drug_target" , car c'est ce fichier qu'on utilise.
+```{r}
+# il faut juste remlacer les vecteurs de ce chunk pour un autre jeu de données
+
+#pour le jeu de donnees Drug-target 
+
+#tar_nm=tab_donnees2$TARGET_NAME
+#drg_nm=tab_donnees2$DRUG_NAME
+#dr_class=tab_donnees2$TARGET_CLASS
+#dr_id=tab_donnees2$DRUG_ID
+
+#pourle jeu de donnees drug-ade
+
+tar_nm=tab_donnees2$ADE_name
+drg_nm=tab_donnees2$drug_name
+dr_class=tab_donnees2$soc_abbrev
+dr_id=tab_donnees2$drug_id
+
+```
+
+
+
+
+--------------------------------------Il n y a rien à modifier dans les chunk suivants----------------------------------
+
+
+
+le chunk suivant es pour transformer les vecteurs R en vecteurs python pour
+pouvoir travailler avec pour le reste du code
+```{python}
+tar_nm_py=r.tar_nm # nous aurons besoin de ces variables pour le code ci-dessous
+drg_nm_py=r.drg_nm
+dr_class_py=r.dr_class
+```
+
+ici nous allons créer un tableau pour le mettre dans cytoscape et faire notre réseau bipartite
+
+le chunk suivant crée un dictionnaire contenant les effets secondaires ou targets en key et
+les classes correspondantes en value cela nous permettra de connaitre la famille de chaque proteine ou ade 
+
+```{python}
+dic_tar_class={}
+co=0
+for tar in (tar_nm_py):   #un dico contenant les sommet en key et les classes correspondantes en value 
+  if(tar not in dic_tar_class.keys()):
+    dic_tar_class[tar]=dr_class_py[co]
+  co=co+1
+
+```
+
+Ici nous créons un data frame que nous allons mettre dans un fichier csv , ce data frame contiendra les noms des drugs , les targets ou effets secondaires et leurs familles.
+une colonne ineraction est aouté qui dit juste qu'un medicaments interagit avec un target ou engendre un ade 
+
+```{python}
+sm1=[]
+sm2=[]
+sm3=[]
+sm4=[]
+list_pass=[]
+for a in range(len(tar_nm_py)):
+  ar=[tar_nm_py[a],drg_nm_py[a]]
+  if(ar not in list_pass and ([drg_nm_py[a],tar_nm_py[a]] not in list_pass ) and drg_nm_py[a]!= tar_nm_py[a]):
+    list_pass.append(ar)
+    sm1.append(tar_nm_py[a])
+    sm2.append(drg_nm_py[a])
+    sm3.append("interact")
+    sm4.append(dic_tar_class[tar_nm_py[a]])
+```
+
+```{r}
+df_gr_bipartite=data.frame(DRUG=py$sm2,ADV=py$sm1,interaction=py$sm3,class_adv=py$sm4)
+
+write.table(df_gr_bipartite,file="graph_bipartite.csv",quote = F,row.names = F,sep = "\t")
+
+```
+
+
+Passons au calcul de H before du graph :
+-----------------------------------------
+
+la fonction suivante trouve tous les linkages paterns d'un graphe bipartite (presence de redondance)
+ici chaque grugs (sommet1) est relié a plusieurs effets secondaires(sommet2) , ce qu'on fait c'est qu'o a créé un dictionaire contenant en clé les noms des drugs et en valeur une liste d'ffets secondaires
+
+sommet1 est la colonne drug name prise du tableau de données 
+sommet2 est la colonne ade name prise du tableau de données
+
+```{python}
+
+def tous_linkages_paterns(sommet1,sommet2):
+  linkage_paterns={}
+  for r in range(len(sommet1)):
+    linkage_paterns[sommet1[r]]=[]
+  lp_drugs_list=[]
+  for pos in range(len(sommet1)):
+        if(sommet2[pos] not in linkage_paterns[sommet1[pos]]):
+          linkage_paterns[sommet1[pos]].append(sommet2[pos])
+          
+  return linkage_paterns
+
+```
+
+
+la fonction suivante calcul la redondance de chaque linkage pattern , elle prend en argument la liste retournée par 
+la fonction précédente en renvoie un dictionnaire contenant en keys les sommets d'un linkage pattenr( les targets ou effets secondaires mais pas le sommet drug qui les relie) et en value il contient la redondance de chaque linkage pattern. cette fonction renvoie aussi une liste contenant tous les linkage pattern sans redondance (pas comme la liste de la fonction précédente) les deux outputs sont mis dans un tupple pour pouvoir etre renvoyés ensemble.
+
+```{python}
+def redon_lp(values_list_lp2): #cette fonction calcul le nombre de redondance d un linkage patern dans une liste de linkage paterns d un graph
+  red_lp2={} 
+  liste_pass=[]
+  co=0
+  for lp in values_list_lp2:
+    if(lp not in liste_pass): #on verifie si le linkage pattern n est pas deja present dans une key pour ne pas faire 2 fois le meme travail ou plus.
+      liste_pass.append(lp)
+      red_lp2[co]=values_list_lp2.count(lp)
+      co=co+1
+  return (red_lp2,liste_pass)
+
+```
+
+
+Ici nous avons la fonction qui calcul H before en applicant la formule et en utilisant les deux fonctions précédentes 
+```{python}
+import math
+
+def calcul_h_before(drg_nm_py,tar_nm_py):
+  linkage_paterns2=tous_linkages_paterns(drg_nm_py,tar_nm_py) #liste des linkage paterns possibles 
+#------------------------------------------------------------------------------------
+  values_list_lp2=[] #tous les linkages paterns 
+  for key in linkage_paterns2:
+    val_lp_sort=sorted(linkage_paterns2[key]) #tri selon ordre alphabetique 
+    values_list_lp2.append(val_lp_sort)
+#------------------------------------------------------------------------------------  
+
+  red=redon_lp(values_list_lp2) #dictionnaire de redondance des linkages paterns (key : id linkage patern , valeur : Lp)
+  red_lp2=red[0]
+  list_ts_lp=red[1]
+  H_before2=0
+  for keyss in red_lp2:
+    H_before2=H_before2+(red_lp2[keyss]/sum(red_lp2.values()))*(math.log(red_lp2[keyss]/sum(red_lp2.values())))
+  H_before2=-H_before2
+  return (H_before2, values_list_lp2,list_ts_lp)
+  
+```
+
+
+```{python}
+  
+clc_h=calcul_h_before(drg_nm_py,tar_nm_py)
+
+values_list_lp2=clc_h[1]
+H_before2=clc_h[0]
+
+H_before2
+```
+
+```{python}
+len(values_list_lp2) #liste de tous les likage paterns possibles on en aura besoin pour le calcul de loss of cov 
+```
+
+calcul de h before pour chaque sommets puis chaque famille de sommets 
+
+chaque sommet dans la liste des linkage patterns a une probabilité bien précise , cela dépend du nombre de linkage patterns dans les quels il est pésent, l'enthalpie de chaque sommet se calcul avec la meme formule de h after en utilisant sa propre probabilité , c'est ce que nous allons faire dans les 7 shunks suivants.
+
+
+ici nous calculons le nombre de sommets (drugs et effets sec ou targets) dans le graphe
+```{r}
+ts_tar=names(table(tar_nm))
+ts_drug=names(table(drg_nm))
+nbr_sommets=length(ts_tar)+length(ts_drug)
+```
+
+
+
+ici nous allons appliquer la formule de calcul de H after et mettre sa valeur pour chaque sommet de target ou effet secondaire et mettre ces valeurs dans une liste 'list_h_bfr_ch_tar'  ch_tar = chaque target mais c'est la meme liste pour les effets secondaires
+```{python}
+import math
+co=0
+list_h_bfr_ch_tar=[]
+list_vrai_tar=[]
+ts_tar=r.ts_tar
+for tar in ts_tar:
+  for lp in values_list_lp2:
+    if(tar in lp ):
+      co=co+1
+  if(co!=0):
+    h_tar=(co/r.nbr_sommets)*math.log(co/r.nbr_sommets)
+    list_h_bfr_ch_tar.append(-h_tar)
+    list_vrai_tar.append(tar)
+  co=0
+  
+
+```
+
+
+
+A present il faut mettre les valeurs de H before de tous les sommets ensemble pour chaque classe pour cela nous allons créer un dictionnaire contenant en keys les différents sommets (target ou effet secondaire) et en value la classe de chaque sommet 
+
+```{python}
+# on initialise les keys en y mettant les sommets souhaites
+dic_tar_class={}
+co=0
+for tar in (tar_nm_py):   #un dico contenant les sommet en key et les classes correspondantes en value 
+  if(tar not in dic_tar_class.keys()):
+    dic_tar_class[tar]=dr_class_py[co]
+  co=co+1
+
+```
+
+
+ici nous créon une liste cntenant les noms des n premières familles choisies au début.
+
+```{r}
+nom_familles=names(table(dr_class))[1:nbr_familles]
+nom_familles
+
+```
+
+
+```{python}
+#dic familles h_before
+#initialisation des valeurs a 0 
+dic_h_bfr={}
+for i in r.nom_familles:
+  dic_h_bfr[i]=0
+```
+
+
+ici nous attribuons une famille à chaque sommet et mettre ces information dansle dictinnaire "dic_h_bfr"
+```{python}
+
+i=0
+for famille in r.nom_familles:
+  for tar in list_vrai_tar:
+    if(dic_tar_class[tar]==famille):
+      dic_h_bfr[dic_tar_class[tar]]=dic_h_bfr[dic_tar_class[tar]]+list_h_bfr_ch_tar[i]
+    i=i+1
+  i=0
+
+
+```
+
+
+-deuxieme étape: calcul H_after 
+
+1-projection monopartie du graph bipartie
+
+ici nous allons faire une liste des aretes de la projection monopartite
+```{python}
+une_erete=[]
+list_art=[]
+list_art_avc_red=[] #nous aurons besoin de cette liste pour calculer la perte pour chaque arete avant la projection 
+for list_liaison in values_list_lp2:
+  if(len(list_liaison)!=1):  #qui peut former une arete (il n'xiste pas d arete formee d un seul sommet et on ne compte pas les boucles)
+    for adv in list_liaison:
+      for adv2 in list_liaison:
+        if(adv!=adv2):
+          une_arete=[adv,adv2]
+          if([adv2,adv] not in list_art_avc_red):
+            list_art_avc_red.append(une_arete)
+          if(une_arete not in list_art and [adv2,adv] not in list_art): #pour ne pas avoir 2 fois la meme arete (inverse)
+            list_art.append(une_arete)
+
+#list_art
+
+
+```
+
+------------------------------------------------------------------------------------------------------------------------
+
+Passons à l'etude de la projection monopartite de notre graphe: 
+
+
+les deux chunks suivant sont juste pour créer une liste contenant les sommets qui restent aprés projection monopartite en suppréssion des sommets formant des boucle (intéragissant avec eux memes )cette liste est "list_vrai_tar2"
+```{python}
+# dico tar en key et redondance en value
+dico_tar_red={}
+co=0  
+list_passe=[] 
+for tar in tar_nm_py: 
+  if(tar not in list_passe): 
+    list_passe.append(tar) 
+    for ar in list_art:
+      if(ar[0]==tar or ar[1]==tar):
+        co=co+1
+    dico_tar_red[tar]=co
+  co=0
+
+```
+
+```{python}
+import math
+
+list_h_aftr_ch_tar=[]
+list_vrai_tar2=[]
+ts_tar=r.ts_tar
+for tar in ts_tar:
+  if(tar in dico_tar_red.keys() and dico_tar_red[tar]!=0):
+    list_vrai_tar2.append(tar)
+  
+
+```
+
+
+
+Le Chunk suivant est pour calculer combien de drugs se trouvent dans chaque famille et les mettre dans un dictionnaire "nbr_sm" puis nous récupérerons les values contenant le nombre des drugs "list_nbr_sm"
+```{python}
+nbr_sm={}
+for famille in r.nom_familles:
+  nbr_sm[famille]=0
+  
+
+i=0
+for famille in r.nom_familles:
+  for tar in list_vrai_tar2:
+    if(dic_tar_class[tar]==famille):
+      nbr_sm[dic_tar_class[tar]]=nbr_sm[dic_tar_class[tar]]+1
+    i=i+1
+  i=0
+
+nbr_sm
+
+nbr_sm_list=[]
+for i in nbr_sm:
+  nbr_sm_list.append(nbr_sm[i])
+
+```
+
+--------------------------------------------------Début calcul H after---------------------------------------------
+
+
+
+```{python}
+#ici nous creons une liste de la projection monopartite pour creer un graphe avec igraph
+tslp=clc_h[2]
+ar=[]
+passe=[]
+liste_lp_gr=[]
+lst_grph=[]
+for lp in tslp:
+  if(len(lp)!=1):
+    for sm1 in lp:
+      for sm2 in lp:
+        ar=[sm1,sm2]
+        if(sm1!= sm2 and [sm2,sm1] not in passe and ar not in passe):
+          liste_lp_gr.append(sm1)
+          liste_lp_gr.append(sm2)
+    lst_grph.append(liste_lp_gr)
+    liste_lp_gr=[]
+# on pourra utiliser la liste liste_lp_gr pour creer un graphe avec la fonction graphe de igraph mais nous n allons pas le faire ici 
+
+```
+
+
+
+on commence calcul de H after dans chaque linkage patern pour chaque sommet
+---------------------------------------------------------------------------- 
+
+nous allons appliquer la formule de calcul de H_after pour chaque sommet 
+dans l'article il n'ont pas calculé H after pour chaque sommet avec la meme formule , ils ont seulement pris la partie (-ln(proba de chaque sommet dans les sous cliques générés dans un linkage pattern)) ou le nombre de cliques = 2^len(lp)-len(lp) cependant len(lp) est infinimet plus petite que 2^len(lp) nous pouvons donc ne pas la mettre.
+
+```{python}
+
+somme_cliques=0
+#on cree ici un dico contenant en keys le nom du sommet (target ou ade) et en value son h after
+h_sm_lp_dic={}
+for lp in tslp:
+  if(len(lp)!=1):
+    for sm in lp:
+      h_sm_lp_dic[sm]=0
+
+i=0
+for lp in tslp:
+  if(len(lp)!=1):
+    for sm in lp:
+      if h_sm_lp_dic[sm]< (-math.log(1/(2**(len(lp))))):
+        h_sm_lp_dic[sm]=-math.log(1/(2**(len(lp))))  #ici ce fait le calcul de  h afterpour chaque sommet 
+        somme_cliques=somme_cliques+2**(len(lp)) #ici on calcul le nombre de cliques total pour calculer h after du graphe monopartite en entier
+    i=i+1
+
+#la liste suivante conient seulement les values du dico precedent
+h_sm_lp=[]
+for i in h_sm_lp_dic:
+  h_sm_lp.append(h_sm_lp_dic[i]) #on aura besoin de cette liste pour faire les graphiques a la fin du code ( les boxplots)
+
+#h_sm_lp_dic
+
+s=[]
+for c in h_sm_lp_dic:
+  s.append(c)
+
+classes=[]
+for t in s:
+  classes.append(dic_tar_class[t])
+
+len(classes)
+classes[75:172]
+
+classes[75,77,78,89,90,92,109,110,115,116,117,119,120,121,122,,129,133,134,140,147,148,155,159,160,165,167]
+
+```
+```{r}
+py$classes[c(76,78,79,90,91,93,110,111,116,117,118,120,121,122,123,130,134,135,141,148,149,156,160,161,166,168)]
+
+mean(py$h_sm_lp[c(76,78,79,90,91,93,110,111,116,117,118,120,121,122,123,130,134,135,141,148,149,156,160,161,166,168)])
+```
+
+
+ici nous allons sommer les h after des sommets pour mettre la valeur de h after à chaque famille 
+```{python}
+#dic familles h_before
+#initialisation des valeurs a 0 
+dic_h_aftr={}
+for i in r.nom_familles:
+  dic_h_aftr[i]=0
+
+i=0
+for famille in r.nom_familles:
+  for tar in h_sm_lp_dic:
+    if(dic_tar_class[tar]==famille):
+      dic_h_aftr[dic_tar_class[tar]]=dic_h_aftr[dic_tar_class[tar]]+h_sm_lp[i]
+      nbr_sm[dic_tar_class[tar]]=nbr_sm[dic_tar_class[tar]]+1
+    i=i+1
+  i=0
+
+dic_h_aftr  #ce dic contient la somme des H after de chaque famille de sommets 
+#les valeurs de ce de ce dictionnaire seront bien evidement divisees par le nombre de sommets de chaque famille mais nous n allons pas faire cela maintenant (le calcul est fait un peu plus en bas juste avant la partie de creation du tavleau recapitulatif des pertes d information )
+
+sm_h_aftr_py=[]
+for z in dic_h_aftr:
+  if z==0:
+    sm_h_aftr_py.append(0.0)  #si on laisse 0 il ne sera pas bien lu quand on passe le vecteur de python a R avec reticulate
+  else:
+    sm_h_aftr_py.append(dic_h_aftr[z])
+
+coef=[]
+i=0
+for c in nbr_sm_list:
+  if(c!=0):
+    sm_h_aftr_py[i]=sm_h_aftr_py[i]/c
+    i=i+1
+  else:
+     sm_h_aftr_py[i]=0.0
+     i=i+1
+sm_h_aftr_py
+
+```
+
+
+H after pour tout le graphe: ici nous utilisonsla valeur nbr_cliques calculés précédement pour appliquer la formule de calcul de h after.
+
+```{python}
+
+nbr_cliques=somme_cliques
+
+H_after=-nbr_cliques*(1/nbr_cliques)*math.log(1/nbr_cliques)
+H_after
+
+```
+
+------------------------------------------------------------------------------------------------------------------------
+
+maintenant pour chaque arete:
+cette partie ne sera pas affiché dans le tableau qui contient le résumé des pertes d'informations car je ne suis pas sur du calcul qu'ils ont fait ,(ils ne disent pas comment il ont calculé cela).
+
+1-faire une liste de liste de liste (liste de linkage paterns et dans chaque lp il y aura les aretes possibles)
+
+```{python}
+import math
+#list_art_avc_red  nous avons deja une liste d aretes , il faut juste trouver a quel lp appartient chaque sommet 
+#nous allons utiliser une combinaison (c(n,k)=n!/(k!(n-k)!)) tq n est la taille du lp et k = 2
+list_lp_de_ar=[]
+deb=0
+for lp in values_list_lp2:
+  if(len(lp)>=2):
+    nbr_ar=int(math.factorial(len(lp))/(2*math.factorial(len(lp)-2)))
+    fin=deb+nbr_ar
+    list_lp_de_ar.append(list_art_avc_red[deb:fin])
+    deb=fin
+
+len(list_lp_de_ar)
+
+len(list_art)
+#list_art_avc_red
+```
+
+```{python}
+import math
+#faire un dico contenant les nouveau lp (leurs id en key et la liste d art en value)
+co=0
+nbr_art=len(list_art)
+list_art_h_bfr=[]
+for art in list_art:
+  for lp in list_lp_de_ar :
+    if(art in lp or [art[1],art[0]] in lp ):
+      co=co+1
+  h_art=-(co/nbr_art)*math.log(co/nbr_art)
+  co=0
+  list_art_h_bfr.append(h_art)
+
+
+#list_art_h_bfr
+
+```
+
+
+calcul pour chaque famille (une arete appartient a une famille si l'un de ses sommets appartient a une famille)
+```{python}
+
+art_fml_h_bfr={}
+for f in  r.nom_familles:
+  art_fml_h_bfr[f]=0
+
+len(list_art)
+len(list_art_h_bfr) #egaux
+
+i=0  
+for fml in r.nom_familles:
+  for ar in list_art:
+    if(dic_tar_class[ar[0]]==fml or dic_tar_class[ar[1]]==fml ):
+      art_fml_h_bfr[fml]=art_fml_h_bfr[fml]+list_art_h_bfr[i]
+    i=i+1
+  i=0
+
+art_fml_h_bfr
+```
+
+calcul h after pour chaque arete 
+```{python}
+h_art_aftr=[]
+list_art_h_aftr=[]
+for art in list_art:
+  h_art_aftr=-(1/len(list_art))*math.log(1/len(list_art))
+  list_art_h_aftr.append(h_art_aftr)
+
+art_fml_h_aftr={}
+for f in  r.nom_familles:
+  art_fml_h_aftr[f]=0
+
+#list_art_h_aftr
+```
+
+-------------------------------------------------Fin calcul H after ----------------------------------------------
+
+
+ici nous allons calculer le nombre d'aretes de chaque famille , nous estimons que si l'un des deux sommets formant l'arete appartient a une famille alors cette arete appartient aussi a cette famille (une arete peut donc appartenir a deux familles en meme temps)
+
+nous allons metre ce calcul dans le tableau qui résume la structure du graphe monopartite et qui contient : le nombre d'arete de chaque famille , le nombre de sommets de chaque famille , et le degré de chaque famille.
+```{python}
+nbr_ar={}
+for famille in r.nom_familles:
+  nbr_ar[famille]=0
+  
+i=0  
+for fml in r.nom_familles:
+  for ar in list_art:
+    if(dic_tar_class[ar[0]]==fml or dic_tar_class[ar[1]]==fml ):
+      art_fml_h_aftr[fml]=art_fml_h_aftr[fml]+list_art_h_aftr[i]
+      nbr_ar[fml]=nbr_ar[fml]+1
+    i=i+1
+  i=0
+
+art_fml_h_aftr
+nbr_ar
+
+nbr_art=[]  #c est la liste contenant les values du dico de nombre d aretes (nbr_ar)
+for i in nbr_ar:
+  nbr_art.append(nbr_ar[i])  
+  
+  
+```
+
+
+Calcul degré chaque sommet et puis chaque famille:
+ici on commence par calculer le degré de chaque sommet pour aprés additionner les sommets appartenant a chaque famille ,le degré de chaque sommet est égal au nombre d'aretes qui contiennent ce sommet , nous avons donc juste a calculer la redondance de ce sommet dans la liste de toutes les aretes "list_art".
+```{python}
+dic_deg_sm={}
+
+for tar in list_vrai_tar2:
+  dic_deg_sm[tar]=0
+
+for tar in dic_deg_sm:
+  for ar in list_art:
+    if(tar == ar[0] or tar==ar[1]):
+      dic_deg_sm[tar]=dic_deg_sm[tar]+1
+
+```
+
+ici nous allons calculer le degré pour chaque famille comme expliqué en haut du chunk précédent.
+```{python}
+dic_deg_fml={}
+
+for fml in r.nom_familles:
+  dic_deg_fml[fml]=0
+
+for famille in r.nom_familles:
+  for tar in list_vrai_tar2:
+    if(dic_tar_class[tar]==famille):
+      dic_deg_fml[famille]=dic_deg_fml[famille]+dic_deg_sm[tar]
+dic_deg_fml
+```
+
+```{python}
+fml_deg=[]
+i=0
+for fml in dic_deg_fml:
+  if(nbr_sm_list[i]!=0):
+    fml_deg.append(dic_deg_fml[fml]/nbr_sm_list[i]) #ici c est la liste des degres de chaque famille que nous utliserons dans le tableau recapitulatif suivant.
+    i=i+1
+  else:
+    fml_deg.append(0.0)
+    i=i+1 
+
+
+```
+
+
+
+Tableau récapitulatif du graphe Monopartite:
+
+```{r}
+recap_gr_mono=data.frame(familles=names(diff_fmls[1:nbr_familles]),nbr_sommets=py$nbr_sm_list,nbr_aretes=py$nbr_art,degre_sommets=py$fml_deg)
+recap_gr_mono
+
+write.table(recap_gr_mono, "Recap_graph_monopartite.csv", row.names=FALSE, sep="\t",dec=".", na=" ")
+```
+
+----------------------------------------Début calcul de la perte de couverture -----------------------------------------
+
+
+# fonction pour Calcul de la perte de couverture moyenne de chaque graph en le calculant pour chaque arrete du graph:
+
+1-la formule est composé de 2 parties essentielles : 
+a- la redondance des linkages paterns(par ex 3 drugs qui relient les memes effets sec forment le meme linkage patern 3 fois )
+b- le nombre d'effets secondaires que ce linkage patern reliés
+
+2-sachant que différents linkage paterns peuvent générer une meme arete il faudra donc:
+2-1-on a un dictionnaire "red_lp2" ou il y a  tous les linkages paterns(liste d'effets secondaires) possibles (la redondance est la valeur et la clé est un identifiant que nous donnerons au linkage patern de 0 à ->), pour cela on aura un autre dictionnaire "dict_id_lp" qui contiendra en clé l'identifiant du linkage patern et en valeur on aura une liste contenant(les effets secondaire) du linkage patern.
+2-2- Pour chaque linkage patern nous allons trouver toutes les aretes qu'il peut generer dans sa projetction monopartite et les mettre dans un autre dictionnaire "aretes_lp" qui contiendra en clé l'ID du likage patern et en veleurs une liste 'liste_ar' 
+2-3- chercher chaque arrete (du graph monopartite) dans chaque linkage patern 
+
+
+
+
+
+Cette fonction "calcul_cov" prend en argument une liste (la meme que celle que prend de la fonction redon_lp (partie 5-1)) et une variable booléenne (0 ou 1) cette variable booléenne prend 0 si nous ne voulons pas que la fonction remplisse une liste de la perte de couverture de chaque arête (ce qui nous ferait gagner un peu de temps de calcul) ou 1 dans le cas contraire.
+Cette fonction nous renvoie un tuple composé de trois éléments : 
+le premier c’est la perte de couverture moyenne de tous le graph qu’on a choisi d’étudier. 
+le deuxième c’est une liste contenant les pertes de couverture de chaque arête de ce graph (elle sera vide si la variable booléenne ==0) 
+le 3eme renvoie une liste de toutes les arêtes possibles (il faut noter que les indices des pertes de couverture dans la 2eme liste correspondent à ceux de la 3eme liste)  
+
+
+```{python}
+
+def calcul_cov(values_list_lp2,ok_chaque_arete): #il nous faut juste une liste avec tous les linkages paterns du graph(donc toutes les liaisons avec des drugs)
+#l argument ok_chaque_arete prends la valeure 0 si on ne veut pas creer un dictionnaire contenant tous les cov des aretes et 1 dans le cas contraire 
+  dict_id_lp={}
+  list_passee=[] #pour ne pas avoir 2 identifiants pour un seul lp 
+  liste_lp=[]
+  #creation de la liste des lp qui peuvent generer des aretes du graph monopartite 
+
+  for lp in values_list_lp2:
+    if(len(lp) != 1):
+      liste_lp.append(lp)
+
+  redo_lp_mono=redon_lp(liste_lp)[0]
+  #ici nous allons attribuer un id a chaque lp de la liste "liste_lp"
+  co=0
+  for i in liste_lp:
+    if( i not in list_passee):
+      dict_id_lp[co]=i
+      list_passee.append(i)
+      co=co+1
+  #transformer les valeurs du dictionnaire de lp en liste d aretes (2 a 2)
+  toutes_aretes_possibles=[]
+  lis_art=[]
+  art=[] #aretes
+  dictio_list_art={}
+  coo=0
+  for lp in dict_id_lp.values():
+    for efsec1 in lp:
+      for efsec2 in lp:
+        if(efsec1!=efsec2):
+          art=[efsec1,efsec2]
+          lis_art.append(art)
+          if(art not in toutes_aretes_possibles and [efsec2,efsec1] not in toutes_aretes_possibles  ):
+            toutes_aretes_possibles.append(art)
+    dictio_list_art[coo]=lis_art
+    lis_art=[]
+    coo=coo+1
+  #maintenant nous allons utiliser la formule de loss of coverage (cov):
+  somme_frml=0
+  nbr_lp=0
+  coef_tot=0
+  formule=0
+  som_cov_art=0 #pour faire la moyenne
+  #ici nous llons faire une liste contenant tous les cov de chaque arete(qui auront le meme indice que les aretes) 
+  list_art_cov=[]
+  for arete2 in toutes_aretes_possibles:
+    for iden in dictio_list_art:  #contient id du linkage patern en key et une liste d aretes en value
+      if(arete2 in dictio_list_art[iden] ):
+        nbr_lp=redo_lp_mono[iden]
+        formule=nbr_lp*2/len(dict_id_lp[iden])
+        somme_frml=somme_frml+formule
+        coef_tot=coef_tot+nbr_lp
+    if(coef_tot==0):
+      cov=0
+      coef_tot=1
+    else:
+      cov=1-(somme_frml/coef_tot)
+    if(ok_chaque_arete==1):
+      list_art_cov.append(cov)
+    som_cov_art=som_cov_art+cov
+    coef_tot=0
+    somme_frml=0
+  if(len(toutes_aretes_possibles)==0):
+    cov_moy=som_cov_art/1
+  else:
+    cov_moy=som_cov_art/len(toutes_aretes_possibles)
+  return (cov_moy,list_art_cov,toutes_aretes_possibles)
+  
+```
+
+```{python}
+cov3_2=calcul_cov(values_list_lp2,1)
+cov_gr=cov3_2[0]
+cov_gr #pour calculer cov moyenne d'un graph en entier on utilise la foction calcul_cov
+
+```
+
+ici nous allons calculer cov pour chaque famille:
+ce code est expliqué dans le tuto. 
+
+```{python}
+# trouver combien de drugs dans le tableau qu on a pris (en definissant le nombre de familles souhete nbr_familles )car le nombre de drugs = nbr de linkage paterns
+df_socs=r.diff_fmls[0:int(r.nbr_familles)]
+dr_id_py=r.dr_id 
+
+vect_nbr_drugs=[]
+deb=0
+co=0
+fin2=0
+drg_pass=[]
+for t in range(int(r.nbr_familles)): 
+  fin2=fin2+r.diff_fmls[t]
+  for z in dr_id_py[deb:fin2]:
+    if(z not in drg_pass):
+      drg_pass.append(z)
+      co=co+1
+  vect_nbr_drugs.append(co) 
+  deb=fin2
+  co=0
+  
+vect_nbr_drugs
+
+```
+
+calcul de cov pour les aretes de chaque famille 
+
+ici nous allons diviser la liste de linkage patterns values_list_lp2 selon les familles, on va par exemple pour la premiere famille selectionner le nombre de listes de sommets des linkage patterns appartenanant a cette premiere famille car rapelons le les familles ont été mises dans l'orde 
+ceci est plus expliqué dans le tuto joint à ce code dans la partie 7.
+```{python}
+df_socs=r.diff_fmls[0:int(r.nbr_familles)]
+deb=0
+cov_e_classes=[]
+list_art_class=[]
+cov_art_class=[]
+for i in range(len(df_socs)):
+  fin=vect_nbr_drugs[i]+deb
+  cov=calcul_cov(values_list_lp2[deb:fin],1)
+  cov_e=cov[0]
+  list_art_class.append(cov[2])
+  cov_art_class.append(cov[1])
+  deb=fin
+  cov_e_classes.append(cov_e)
+
+```
+
+-----------------------------------------Début calcule cov pour chaque sommet-------------------------------------------
+
+dans les 4 chunks suivants nous allons calculer cov pour chaque sommet
+pour cela nous allons prendre les aretes reliees a chaque sommet , et faire la moyenne de leurs cov puit la moyenne des sommets de chaque famille (de chaque soc ou class de target)
+
+Tout d’abord nous commençons par faire une liste de tous les sommets (que nous avons déjà en ayant utilisé la fonction calcul_cov() ) 
+
+Après cela j’ai créé un dictionnaire « dic_sm_cov » contenant les sommets trouvés en keys et en values j’ai mis la moyenne des pertes de couvertures des arêtes auquel il est relié 
+
+Puis pour calculer la perte de couverture moyenne des sommets de chaque famille 
+Le vecteur « familles » contient le nom des 7 familles choisies.
+
+Après cela j’ai créé un dictionnaire « dic_tar_class »  qui met en keys les sommets (les targets) et en values la classe à qui appartient chacun.
+puis j’ai aussi implémenté un autre dictionnaire « dic_cov_v2» qui cette fois va contenir la moyenne des pertes de couverture des sommets de chaque famille sachant que la perte de couverture de chaque sommet c’est la moyenne des pertes de couverture de toutes les arêtes relié a celui-ci. 
+
+
+```{python}
+tts_aretes=cov3_2[2]
+cov_tts_aretes=cov3_2[1]
+
+list_tar=[] #la liste de tous les targets
+for ar in tts_aretes:
+  if(ar[0] not in list_tar):
+    list_tar.append(ar[0])
+  if(ar[1] not in list_tar):
+    list_tar.append(ar[1])
+
+
+```
+
+
+```{python}
+
+dic_sm_cov={}
+#initialiser les values de dic_sm_cov a 0
+for key in list_tar:
+  dic_sm_cov[key]=0
+
+comb_art=0
+
+#dabord nous allons mettre la moyenne des cov des aretes relies a chaque sommet (pour chaque sommet) dans un dico
+for sm in list_tar:
+  for i in range(len(tts_aretes)) :
+    if(sm in tts_aretes[i]):
+      dic_sm_cov[sm]=dic_sm_cov[sm]+cov_tts_aretes[i]
+      comb_art=comb_art+1
+  dic_sm_cov[sm]=(dic_sm_cov[sm]/comb_art)
+  comb_art=0
+
+```
+
+
+```{r}
+familles=names(diff_fmls[1:nbr_familles])
+   
+familles
+```
+
+
+```{python}
+#mainteant nous allons faire la moyenne de chaque famille de sommets pour calculer cov_V 
+fml=r.familles
+dic_tar_class={}
+co=0
+for tar in (tar_nm_py):   #un dico contenant les sommet en key et les classes correspondantes en value 
+  if(tar not in dic_tar_class.keys()):
+    dic_tar_class[tar]=dr_class_py[co]
+  co=co+1
+
+dic_cov_v2={} # initialiser ses values a 0 
+for cls in fml:
+  dic_cov_v2[cls]=0
+rm=[]
+co1=0
+for cls in fml[0:int(r.nbr_familles)]:   #cls=classe 
+  for som in dic_sm_cov:
+      if dic_tar_class[som]==cls:
+        dic_cov_v2[cls]=dic_cov_v2[cls]+dic_sm_cov[som]
+        co1=co1+1
+  if(co1!=0):
+    dic_cov_v2[cls]=dic_cov_v2[cls]/co1
+  co1=0
+#dic_cov_v2
+cov_v2=[]
+for cv in dic_cov_v2:
+  cov_v2.append(float(dic_cov_v2[cv]))
+  
+cov_v2
+
+```
+
+---------------------------------------Fin calcule cov pour chaque sommet----------------------------------------------
+
+-----------------------------------Fin de calcul de la perte de couverture-*-------------------------------------------
+
+les parties suivantes sont juste des transormations de vecteurs python en vecteurs R affin de créer des plots ou des dataframes avec R et les enregistrer.
+```{python}
+
+sm_h_bfr_py=[]
+
+ar_h_bfr=[]
+for i in art_fml_h_bfr:
+  ar_h_bfr.append(art_fml_h_bfr[i])
+
+for i in dic_h_bfr:
+  sm_h_bfr_py.append(dic_h_bfr[i])
+
+
+#sm_h_bfr_py[16]=0.0
+sm_h_bfr_py
+
+#sm_h_bfr_py[16]=0.0
+```
+
+Ici nous allons créer un ata frame contenant le récapitulatif des pertes aprés projection monopartite de notre réseau bipartite de départ.
+```{r}
+sm_h_aftr=py$sm_h_aftr_py
+sm_h_bfr=py$sm_h_bfr_py
+ar_h_bfr=py$ar_h_bfr
+sm_h_bfr
+sm_h_aftr
+
+```
+
+le tableau suivant est le meme que le tableau 2 de l'article "Information Loss in Network Pharmacology Ingo Vogt[a] and Jordi Mestres*[a]". sauf que je n'ai pas mis la colonne entropie H pour les aretes avant et apres projection car je ne suis pas sur de leur calcul.
+
+```{r}
+
+#values_list_lp2
+cov_v2=py$cov_v2
+
+H_before2=py$H_before2
+
+cov_gr=py$cov_gr
+
+tab_result=data.frame(GRAPH_Hbefore=c(signif(H_before2,2),vector(length = nbr_familles)),VERTICES_Hbefore=c(mean(sm_h_bfr),sm_h_bfr),GRAPH_Hafter=c(py$H_after,vector(length = nbr_familles)),VERTICES_Hafter=c(mean(sm_h_aftr),sm_h_aftr),COV_E=c(signif(cov_gr,2),signif(py$cov_e_classes,2)),COV_V=c(signif(mean(cov_v2),2),signif(cov_v2,2)),row.names=c("class name",names(diff_fmls[1:nbr_familles]))) 
+
+tab_result
+write.table(tab_result, "tableau_perte_information.csv", row.names=FALSE, sep="\t",dec=".", na=" ")
+
+
+
+```
+
+
+
+Ici nous avons les boxplots qui donnent la distribution des valeurs de delta_H et Cov
+```{python}
+vect_sm=[]
+vect_cov=[]
+for sm in dic_sm_cov:
+  vect_sm.append(sm)
+  vect_cov.append(dic_sm_cov[sm])
+  
+vect_class=[]
+for sm in h_sm_lp_dic:
+  vect_class.append(dic_tar_class[sm])
+
+```
+
+```{r width=10 ,fig.height=15}
+vect_sm=py$vect_sm
+vect_cov=py$vect_cov
+vect_class=py$vect_class
+
+graph_cyto=data.frame(Target=vect_sm,loss_cov=vect_cov,class=vect_class)
+graph_cyto
+
+delta_h=vector(length = length(py$list_h_aftr_ch_tar) )
+for (i in 1:length(py$list_h_aftr_ch_tar)) {
+  delta_h[i]=py$h_sm_lp[i]-py$list_h_bfr_ch_tar[i]
+}
+delta_h
+
+length(vect_cov)
+length(py$list_h_aftr_ch_tar)
+
+pdf(" Relaation_expo_Cov_H.pdf ", height=20,width=20)
+{
+plot(py$h_sm_lp~vect_cov,col=rainbow(nbr_familles),pch=19,font.axis=2, cex.main=2, cex.lab=2, cex.sub=3,xlab="Loss of coverage",ylab = "Increase in uncentainty [nats]" ,cex=2)
+legend("topleft", legend=names(diff_fmls[1:nbr_familles]),col=rainbow(nbr_familles), pch=19,cex=3, title="familles", text.font=4, bg='lightblue')
+}
+```
+
+
+boxplot:
+
+```{r fig1, fig.height =10, fig.width = 20}
+
+library(ggplot2)
+#pdf("boxplot_perte_de_couverture.pdf", height=10,width=10)
+
+p=boxplot(graph_cyto$loss_cov~graph_cyto$class,col=rainbow(nbr_familles),xlab =("TARGETS"),cex.lab=1,cex.axis=1,ylab = ("Loss Of Coverage"),las=2)
+
+
+?boxplot()
+#pdf("boxplot_augmentation_incertitude.pdf", height=10,width=30)
+boxplot(py$h_sm_lp~py$classes,col=rainbow(nbr_familles),xlab = "TARGETS",ylab="Increase In Uncertainty",cex.lab=1,cex.axis=1,las=2)
+
+
+```
+
+partie creation du fichier csv du graph monopartite pour cytoscape :
+
+```{python}
+sm1=[]
+sm2=[]
+for ar in cov3_2[2]:
+  if(len(ar)>1):
+    sm1.append(ar[0])
+    sm2.append(ar[1])
+    
+ls_class=[]
+for sm in sm1:
+  ls_class.append(dic_tar_class[sm])  
+
+```
+
+
+création du fichier csv pour faire la projection monopartite.
+```{python}
+
+H_sommets1=[]
+for tar in sm1:
+  H_sommets1.append(h_sm_lp_dic[tar])
+H_sommets2=[]
+for tar in sm2:
+  H_sommets2.append(h_sm_lp_dic[tar])
+
+vect_cov_cy=cov3_2[1]
+
+class_sm2=[]
+for tar in sm2:
+  class_sm2.append(dic_tar_class[tar])
+  
+```
+
+```{r}
+vect_sm1=py$sm1
+vect_sm2=py$sm2
+vect_cov_cy=py$vect_cov_cy
+vect_class=py$ls_class
+class_sm2=py$class_sm2
+graph_cyto2=data.frame(sommet1=vect_sm1,sommet2=vect_sm2,aug_incert_sm1=py$H_sommets1,aug_incert_sm2=py$H_sommets2,los_of_coverage=vect_cov_cy,class_sm1=vect_class,class_sm2=class_sm2)
+graph_cyto2
+
+write.table(graph_cyto2,file="graph_monopartite.csv",quote = F,row.names = F,sep = "\t")
+
+```
+
+
+
+
+
+
+
+
+
+
